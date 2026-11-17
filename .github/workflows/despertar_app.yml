@@ -1,0 +1,51 @@
+# Visita la página de FIREN'T cada 6 horas para que Streamlit no la duerma.
+# Streamlit duerme las apps después de 12 horas sin visitas, y solo se despiertan
+# con un navegador de verdad (o tocando el botón "Yes, get this app back up!").
+name: Mantener la app despierta
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # cada 6 horas (hora UTC), en el minuto 17
+  workflow_dispatch:          # permite correrlo a mano desde la pestaña Actions
+
+jobs:
+  visitar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar el navegador
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Abrir la página (y despertarla si está dormida)
+        env:
+          APP_URL: https://prueba-focos-calor-psh4ben7idwv3qupgslwdw.streamlit.app/
+        run: |
+          python - <<'PY'
+          import asyncio, os
+          from playwright.async_api import async_playwright
+
+          async def main():
+              async with async_playwright() as p:
+                  navegador = await p.chromium.launch()
+                  pagina = await navegador.new_page()
+                  await pagina.goto(os.environ["APP_URL"], wait_until="domcontentloaded", timeout=120000)
+                  await pagina.wait_for_timeout(10000)
+                  boton = pagina.get_by_role("button", name="Yes, get this app back up!")
+                  if await boton.count():
+                      print("La app estaba dormida: tocando el botón para despertarla.")
+                      await boton.first.click()
+                      await pagina.wait_for_timeout(90000)
+                  else:
+                      print("La app estaba despierta.")
+                      await pagina.wait_for_timeout(30000)
+                  print("Título de la página:", await pagina.title())
+                  await navegador.close()
+
+          asyncio.run(main())
+          PY
