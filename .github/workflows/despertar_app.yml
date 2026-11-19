@@ -1,17 +1,18 @@
-# Visita la página de FIREN'T cada 6 horas para que Streamlit no la duerma.
+# Visita la página de FIREN'T cada hora para que Streamlit no la duerma.
+# GitHub a veces saltea ejecuciones programadas; con una por hora siempre quedan de sobra.
 # Streamlit duerme las apps después de 12 horas sin visitas, y solo se despiertan
 # con un navegador de verdad (o tocando el botón "Yes, get this app back up!").
 name: Mantener la app despierta
 
 on:
   schedule:
-    - cron: "17 */6 * * *"   # cada 6 horas (hora UTC), en el minuto 17
+    - cron: "23 * * * *"     # cada hora, en el minuto 23
   workflow_dispatch:          # permite correrlo a mano desde la pestaña Actions
 
 jobs:
   visitar:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/setup-python@v5
         with:
@@ -27,25 +28,63 @@ jobs:
           APP_URL: https://prueba-focos-calor-psh4ben7idwv3qupgslwdw.streamlit.app/
         run: |
           python - <<'PY'
-          import asyncio, os
+          import asyncio, os, re
           from playwright.async_api import async_playwright
+
+          BOTON = re.compile(r"get this app back up", re.I)
+
+          async def buscar_boton(pagina):
+              for marco in [pagina.main_frame] + pagina.frames:
+                  b = marco.get_by_role("button", name=BOTON)
+                  if await b.count():
+                      return b.first
+              return None
+
+          async def app_cargada(pagina):
+              for marco in pagina.frames:
+                  if await marco.locator("[data-testid=stApp]").count():
+                      return True
+              return False
 
           async def main():
               async with async_playwright() as p:
                   navegador = await p.chromium.launch()
-                  pagina = await navegador.new_page()
-                  await pagina.goto(os.environ["APP_URL"], wait_until="domcontentloaded", timeout=120000)
-                  await pagina.wait_for_timeout(10000)
-                  boton = pagina.get_by_role("button", name="Yes, get this app back up!")
-                  if await boton.count():
-                      print("La app estaba dormida: tocando el botón para despertarla.")
-                      await boton.first.click()
-                      await pagina.wait_for_timeout(90000)
-                  else:
+                  pagina = await navegador.new_page(viewport={"width": 1440, "height": 900})
+                  await pagina.goto(os.environ["APP_URL"], wait_until="domcontentloaded", timeout=180000)
+                  estado = "desconocido"
+                  for _ in range(24):                      # hasta 2 minutos esperando que aparezca algo
+                      await pagina.wait_for_timeout(5000)
+                      boton = await buscar_boton(pagina)
+                      if boton:
+                          print("La app estaba DORMIDA: tocando el botón para despertarla.")
+                          await boton.click()
+                          estado = "dormida"
+                          break
+                      if await app_cargada(pagina):
+                          estado = "despierta"
+                          break
+                  if estado == "dormida":
+                      for _ in range(36):                  # hasta 3 minutos esperando que arranque
+                          await pagina.wait_for_timeout(5000)
+                          if await app_cargada(pagina):
+                              print("La app ya arrancó.")
+                              break
+                  elif estado == "despierta":
                       print("La app estaba despierta.")
-                      await pagina.wait_for_timeout(30000)
-                  print("Título de la página:", await pagina.title())
+                  else:
+                      print("No se pudo saber el estado de la app. Texto de la página:")
+                      print((await pagina.inner_text("body"))[:500])
+                  await pagina.wait_for_timeout(30000)     # quedarse un rato como visita real
+                  await pagina.screenshot(path="captura.png")
                   await navegador.close()
 
           asyncio.run(main())
           PY
+
+      - name: Guardar captura de la visita
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captura-visita
+          path: captura.png
+          retention-days: 3
